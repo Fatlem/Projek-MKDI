@@ -1,0 +1,375 @@
+const SPREADSHEET_ID = '10BchzSik2dqQv8z3F1aJ5f4VDhCZ6gJSkxVuTPKs52U';
+
+const SHEET_DATA = 'BPK Kinerja';
+const SHEET_USER = 'User';
+const SHEET_PIC = 'PIC';
+
+// Baris pada sheet SHEET_DATA sesuai Template.xlsx
+const ROW_TITLE1 = 1;     // Judul baris 1
+const ROW_TITLE2 = 2;     // Judul baris 2
+const ROW_TITLE3 = 3;     // Judul baris 3
+const ROW_HEADER = 5;     // Header kolom
+const ROW_DATA_START = 6; // Data mulai baris ke-6
+
+// Urutan kolom: No, Temuan, Sub Temuan, Kriteria, Sebab, Rekomendasi, PIC, Rencana Aksi, Jadwal Pelaksanaan, Output
+const COLS = ['No','Temuan','SubTemuan','Kriteria','Sebab','Rekomendasi','PIC','RencanaAksi','JadwalPelaksanaan','Output'];
+const NUM_COLS = COLS.length; // 10 (A..J)
+
+const SVG_ICON = "data:image/svg+xml," + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#0f172a"/><stop offset="100%" stop-color="#334155"/></linearGradient></defs><rect width="512" height="512" rx="115" fill="url(#g)"/><rect x="96" y="196" width="76" height="224" rx="14" fill="white" opacity=".95"/><rect x="218" y="126" width="76" height="294" rx="14" fill="white"/><rect x="340" y="166" width="76" height="254" rx="14" fill="white" opacity=".9"/><circle cx="134" cy="178" r="16" fill="#cbd5e1"/><circle cx="256" cy="108" r="16" fill="#cbd5e1"/><circle cx="378" cy="148" r="16" fill="#cbd5e1"/><path d="M134 178 L256 108 L378 148" stroke="#cbd5e1" stroke-width="8" fill="none" stroke-linecap="round"/></svg>');
+
+// FIX TOTAL ERROR: Menggunakan setWrapStrategy & memisah pemanggilan objek Range
+function _applyTableFormatting(range) {
+  if (!range) return;
+  
+  // 1. Set Border
+  range.setBorder(true, true, true, true, true, true, '#000000', SpreadsheetApp.BorderStyle.SOLID);
+  
+  // 2. Set Alignment
+  range.setVerticalAlignment('top');
+  
+  // 3. Set Text Wrapping secara aman tanpa memicu TypeError
+  try {
+    range.setWrapStrategy(SpreadsheetApp.WrapStrategy.WRAP);
+  } catch (e) {
+    range.setWrap(true);
+  }
+}
+
+// ══════════════════ AUTO-MERGE KOLOM No & Temuan ══════════════════
+// Mengelompokkan baris berdasarkan kolom "No": baris dengan No kosong
+// dianggap masih bagian dari grup No terakhir yang terisi di atasnya.
+// Kolom No (A) dan Temuan (B) di-merge vertikal untuk tiap grup yang
+// jumlah barisnya lebih dari 1. Dipanggil ulang setiap kali ada
+// penambahan, perubahan, atau penghapusan baris agar mergenya selalu
+// sinkron dengan data terbaru.
+function _rebuildMerges(sh) {
+  try {
+    const lastRow = sh.getLastRow();
+    if (lastRow < ROW_DATA_START) return;
+    const numRows = lastRow - ROW_DATA_START + 1;
+    if (numRows < 1) return;
+
+    // 1. Unmerge dulu semua sel lama di kolom No+Temuan agar tidak bentrok
+    sh.getRange(ROW_DATA_START, 1, numRows, 2).breakApart();
+
+    // 2. Baca ulang nilai kolom No setelah unmerge
+    const noCol = sh.getRange(ROW_DATA_START, 1, numRows, 1).getValues();
+
+    // 3. Kelompokkan baris & merge tiap grup yang >1 baris
+    let groupStart = 0;
+    for (let i = 1; i <= numRows; i++) {
+      const isBoundary = (i === numRows) || String(noCol[i][0]).trim() !== '';
+      if (isBoundary) {
+        const groupLen = i - groupStart;
+        if (groupLen > 1) {
+          const startRow = ROW_DATA_START + groupStart;
+          sh.getRange(startRow, 1, groupLen, 2).mergeVertically();
+        }
+        groupStart = i;
+      }
+    }
+  } catch (e) {
+    // Jangan sampai kegagalan merge menghentikan proses simpan/hapus data utama
+  }
+}
+
+// ══════════════════ ENTRY POINT ══════════════════
+function doGet(e) {
+  if (e && e.parameter && e.parameter.type === 'manifest') return serveManifest();
+  const tpl = HtmlService.createTemplateFromFile('Index');
+  tpl.appUrl = ScriptApp.getService().getUrl();
+  tpl.svgIcon = SVG_ICON;
+  return tpl.evaluate()
+    .setTitle('NKP Kinerja 2026 - Tindak Lanjut Hasil Pemeriksaan BPK')
+    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+}
+
+function include(filename) { return HtmlService.createHtmlOutputFromFile(filename).getContent(); }
+
+// ══════════════════ PWA MANIFEST ══════════════════
+function serveManifest() {
+  const url = ScriptApp.getService().getUrl();
+  const m = {
+    name: "NKP Kinerja 2026 - Tindak Lanjut BPK",
+    short_name: "NKP-2026",
+    description: "Platform pemantauan tindak lanjut hasil pemeriksaan BPK",
+    start_url: url, scope: url, display: "standalone", orientation: "portrait-primary",
+    background_color: "#0f172a", theme_color: "#0f172a",
+    categories: ["productivity","government"], lang: "id",
+    icons: [
+      { src: SVG_ICON, sizes: "any", type: "image/svg+xml", purpose: "any" },
+      { src: SVG_ICON, sizes: "any", type: "image/svg+xml", purpose: "maskable" }
+    ]
+  };
+  return ContentService.createTextOutput(JSON.stringify(m)).setMimeType(ContentService.MimeType.JSON);
+}
+
+// ══════════════════ INIT ══════════════════
+function initializeData() {
+  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  _setupUser(ss);
+  _setupPic(ss);
+  _setupBpkKinerja(ss);
+  return { success: true, message: 'Berhasil! Sheet "User", "PIC", dan "BPK Kinerja" sudah disiapkan.' };
+}
+
+function _setupUser(ss) {
+  let sh = ss.getSheetByName(SHEET_USER) || ss.insertSheet(SHEET_USER);
+  if (sh.getLastRow() > 0) return;
+  sh.getRange(1,1,1,4).setValues([
+    ['admin','Administrator','pangan2026','admin'],
+  ]);
+}
+
+function _setupPic(ss) {
+  let sh = ss.getSheetByName(SHEET_PIC) || ss.insertSheet(SHEET_PIC);
+  if (sh.getLastRow() > 0) return;
+  sh.getRange(1,1,8,1).setValues([
+    ['Biro Manajemen Kinerja Data dan Informasi'],
+    ['Biro Hukum dan Kerjasama'],
+    ['Biro Sumber Daya Manusia dan Organisasi'],
+    ['Biro Umum dan Hubungan Masyarakat'],
+    ['Biro Keuangan dan BMN'],
+    ['Deputi Bidang Koordinasi Tata Niaga dan Distribusi Pangan'],
+    ['Deputi Bidang Koordinasi Usaha Pangan dan Pertanian'],
+    ['Deputi Bidang Koordinasi Keterjangkauan dan Keamanan Pangan'],
+  ]);
+}
+
+function _setupBpkKinerja(ss) {
+  let sh = ss.getSheetByName(SHEET_DATA) || ss.insertSheet(SHEET_DATA);
+  if (sh.getLastRow() >= ROW_HEADER) return;
+  
+  sh.getRange(ROW_TITLE1,1,1,NUM_COLS).merge().setValue('TINDAKLANJUT HASIL PEMERIKSAAN BPK')
+    .setFontWeight('bold').setFontSize(16).setHorizontalAlignment('center');
+  sh.getRange(ROW_TITLE2,1,1,NUM_COLS).merge().setValue('ATAS SINKRONISASI SISTEM INFORMASI PANGAN TAHUN 2024 S.D SEPTEMBER 2025')
+    .setFontWeight('bold').setFontSize(16).setHorizontalAlignment('center');
+  sh.getRange(ROW_TITLE3,1,1,NUM_COLS).merge().setValue('DAN KESIAPAN PEMERINTAH MELAKSANAKAN PROGRAM KETAHANAN PANGAN POKOK TERTENTU/STRATEGIS PERIODE 2025-2029')
+    .setFontWeight('bold').setFontSize(16).setHorizontalAlignment('center');
+    
+  const headerRange = sh.getRange(ROW_HEADER,1,1,NUM_COLS);
+  headerRange.setValues([[
+    'No','Temuan','Sub Temuan','Kriteria','Sebab','Rekomendasi','PIC','Rencana Aksi','Jadwal Pelaksanaan','Output'
+  ]]).setFontWeight('bold').setFontSize(12).setHorizontalAlignment('center').setBackground('#E2EFDA');
+  
+  _applyTableFormatting(headerRange);
+}
+
+// ══════════════════ AUTH ══════════════════
+function login(u, p) {
+  try {
+    const sh = SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(SHEET_USER);
+    if (!sh) return { success:false, message:'Sheet User tidak ditemukan.' };
+    const rows = sh.getDataRange().getValues();
+    for (let i=0;i<rows.length;i++) {
+      if (String(rows[i][0]).trim().toLowerCase()===String(u).trim().toLowerCase() && String(rows[i][2]).trim()===String(p).trim()) {
+        return { success:true, user:{ username:rows[i][0], nama:rows[i][1], role:String(rows[i][3]).trim().toLowerCase() } };
+      }
+    }
+    return { success:false, message:'Username atau password salah.' };
+  } catch(e) { return { success:false, message:'Error: '+e.message }; }
+}
+
+// ══════════════════ USERS / PIC ══════════════════
+function getUserListForLogin() {
+  try {
+    const sh = SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(SHEET_USER);
+    if (!sh) return [];
+    const rows = sh.getDataRange().getValues();
+    var list = [];
+    for(var i=1; i<rows.length; i++){
+      if(rows[i][0]) list.push({ username: rows[i][0], nama: rows[i][1]||rows[i][0], role: String(rows[i][3]).trim().toLowerCase() });
+    }
+    return list;
+  } catch(e){ return []; }
+}
+
+function getPicList() {
+  try {
+    const sh = SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(SHEET_PIC);
+    if (!sh || sh.getLastRow()<1) return [];
+    const rows = sh.getRange(1,1,sh.getLastRow(),1).getValues();
+    return rows.filter(r=>String(r[0]).trim()).map(r=>({ username:String(r[0]).trim(), nama:String(r[0]).trim() }));
+  } catch(e){ return []; }
+}
+
+// ══════════════════ READ DATA ══════════════════
+function _rowToObj(row, rowIndex) {
+  const o = { _row: rowIndex };
+  COLS.forEach((c,i)=>o[c]=row[i]);
+  return o;
+}
+
+function getAllTemuan() {
+  try {
+    const sh = SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(SHEET_DATA);
+    if (!sh || sh.getLastRow() < ROW_DATA_START) return [];
+    const n = sh.getLastRow()-ROW_DATA_START+1;
+    const rows = sh.getRange(ROW_DATA_START,1,n,NUM_COLS).getValues();
+    
+    let lastNo = "";
+    let lastTemuan = "";
+    
+    return rows.map((r,i) => {
+      let rawNo = String(r[0] || '').trim();
+      let rawTemuan = String(r[1] || '').trim();
+
+      if (rawNo) lastNo = rawNo;
+      if (rawTemuan) lastTemuan = rawTemuan;
+
+      return {
+        _row: ROW_DATA_START + i,
+        No: rawNo || lastNo,
+        Temuan: rawTemuan || lastTemuan,
+        SubTemuan: String(r[2] || ''),
+        Kriteria: String(r[3] || ''),
+        Sebab: String(r[4] || ''),
+        Rekomendasi: String(r[5] || ''),
+        PIC: String(r[6] || ''),
+        RencanaAksi: String(r[7] || ''),
+        JadwalPelaksanaan: String(r[8] || ''),
+        Output: String(r[9] || ''),
+        isSubRow: (rawNo === "" && rawTemuan === "")
+      };
+    }).filter(o=>o.Temuan || o.SubTemuan || o.PIC || o.Kriteria);
+  } catch(e){ return []; }
+}
+
+function getTemuanByPic(pic) {
+  return getAllTemuan().filter(r=>String(r.PIC).trim()===String(pic).trim());
+}
+
+// ══════════════════ DASHBOARD ══════════════════
+function getDashboardData() {
+  try {
+    const allR = getAllTemuan();
+    const picList = getPicList();
+    const noSet = new Set(allR.map(r=>r.No).filter(v=>v!==''&&v!=null));
+    let selesai=0, proses=0, belum=0;
+    allR.forEach(r=>{
+      if (String(r.Output||'').trim()) selesai++;
+      else if (String(r.RencanaAksi||'').trim() || String(r.JadwalPelaksanaan||'').trim()) proses++;
+      else belum++;
+    });
+    const picMengisi = picList.filter(p=>allR.some(r=>String(r.PIC).trim()===String(p.username).trim())).length;
+    const picStats = picList.map(p=>{
+      const rk = allR.filter(r=>String(r.PIC).trim()===String(p.username).trim());
+      const sel = rk.filter(r=>String(r.Output||'').trim()).length;
+      return {
+        username:p.username, nama:p.nama, jumlah:rk.length, selesai:sel,
+        progress: rk.length>0 ? Math.round((sel/rk.length)*100) : 0,
+        status: rk.length>0 ? 'BERJALAN' : 'KOSONG'
+      };
+    });
+    return {
+      totalTemuan: noSet.size,
+      totalTindakLanjut: allR.length,
+      picMengisi, totalPic: picList.length,
+      progressKeseluruhan: allR.length>0 ? Math.round((selesai/allR.length)*100) : 0,
+      status: { selesai, proses, belum },
+      picStats
+    };
+  } catch(e){
+    return { totalTemuan:0,totalTindakLanjut:0,picMengisi:0,totalPic:0,progressKeseluruhan:0,status:{selesai:0,proses:0,belum:0},picStats:[] };
+  }
+}
+
+// ══════════════════ CRUD ══════════════════
+function getNextNo() {
+  try {
+    const rows = getAllTemuan();
+    let max = 0;
+    rows.forEach(r=>{ const n = Number(r.No)||0; if (n>max) max=n; });
+    return max+1;
+  } catch(e){ return 1; }
+}
+
+function addTemuan(fd) {
+  const lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(15000);
+    const sh = SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(SHEET_DATA);
+    if (!sh) return { success:false, message:'Sheet tidak ditemukan' };
+    
+    let targetRow = Math.max(sh.getLastRow(), ROW_HEADER) + 1;
+    let writeNo = fd.No || getNextNo();
+    let writeTemuan = fd.Temuan || '';
+    
+    // Menambahkan Sub-Temuan tepat di bawah baris induknya
+    if (fd.isSubAdd && fd.parentRow) {
+      targetRow = Number(fd.parentRow) + 1;
+      sh.insertRowAfter(Number(fd.parentRow));
+      writeNo = '';     // Dikosongkan di sheet agar tidak spam nomor
+      writeTemuan = ''; // Dikosongkan di sheet agar tidak spam temuan
+    }
+
+    const targetRange = sh.getRange(targetRow, 1, 1, NUM_COLS);
+    targetRange.setValues([[
+      writeNo, writeTemuan, fd.SubTemuan||'', fd.Kriteria||'', fd.Sebab||'',
+      fd.Rekomendasi||'', fd.PIC||'', fd.RencanaAksi||'', fd.JadwalPelaksanaan||'', fd.Output||''
+    ]]);
+    
+    // Pemanggilan format tabel aman
+    _applyTableFormatting(targetRange);
+    
+    if (writeNo) {
+      sh.getRange(targetRow, 1).setHorizontalAlignment('center');
+    }
+
+    // Susun ulang merge kolom No & Temuan agar grup ini otomatis tergabung
+    _rebuildMerges(sh);
+    
+    return { success:true, row:targetRow, no:writeNo };
+  } catch(e){ 
+    return { success:false, message: e.toString() }; 
+  } finally { 
+    lock.releaseLock(); 
+  }
+}
+
+function updateTemuan(rowIndex, fd) {
+  try {
+    const sh = SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(SHEET_DATA);
+    if (!sh) return { success:false, message:'Sheet tidak ditemukan' };
+    
+    rowIndex = Number(rowIndex);
+    if (rowIndex < ROW_DATA_START) return { success:false, message:'Baris tidak valid' };
+    
+    const targetRange = sh.getRange(rowIndex, 1, 1, NUM_COLS);
+    targetRange.setValues([[
+      fd.No||'', fd.Temuan||'', fd.SubTemuan||'', fd.Kriteria||'', fd.Sebab||'',
+      fd.Rekomendasi||'', fd.PIC||'', fd.RencanaAksi||'', fd.JadwalPelaksanaan||'', fd.Output||''
+    ]]);
+    
+    // Pemanggilan format tabel aman
+    _applyTableFormatting(targetRange);
+    
+    if (fd.No) {
+      sh.getRange(rowIndex, 1).setHorizontalAlignment('center');
+    }
+
+    // Susun ulang merge kolom No & Temuan (jaga-jaga jika No/Temuan berubah)
+    _rebuildMerges(sh);
+    
+    return { success:true };
+  } catch(e){ 
+    return { success:false, message: e.toString() }; 
+  }
+}
+
+function deleteTemuan(rowIndex) {
+  try {
+    const sh = SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(SHEET_DATA);
+    if (!sh) return { success:false, message:'Sheet tidak ditemukan' };
+    rowIndex = Number(rowIndex);
+    if (rowIndex < ROW_DATA_START) return { success:false, message:'Baris tidak valid' };
+    sh.deleteRow(rowIndex);
+
+    // Susun ulang merge kolom No & Temuan karena grup bisa berubah setelah baris dihapus
+    _rebuildMerges(sh);
+
+    return { success:true };
+  } catch(e){ 
+    return { success:false, message: e.toString() }; 
+  }
+}
